@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -13,6 +14,7 @@ import (
 	"deer-flow-go/internal/workflow"
 	"deer-flow-go/pkg/config"
 	"deer-flow-go/pkg/handlers"
+	"deer-flow-go/pkg/queue"
 )
 
 func main() {
@@ -52,11 +54,26 @@ func main() {
 		logger.WithError(err).Warn("Workflow validation failed, but continuing startup")
 	}
 
+	// 创建队列管理器
+	queueConfig := &queue.QueueConfig{
+		MaxWorkers:     cfg.Queue.MaxWorkers,
+		QueueSize:      cfg.Queue.QueueSize,
+		RequestTimeout: time.Duration(cfg.Queue.RequestTimeout) * time.Second,
+		QueueTimeout:   time.Duration(cfg.Queue.QueueTimeout) * time.Second,
+	}
+	queueManager := queue.NewQueueManager(queueConfig, agentWorkflow, logger)
+
+	// 启动队列管理器
+	if err := queueManager.Start(); err != nil {
+		logger.WithError(err).Fatal("Failed to start queue manager")
+	}
+	logger.Info("Queue manager started successfully")
+
 	// 创建路由器
 	router := gin.Default()
 
 	// 设置API处理器
-	apiHandler := handlers.NewAPIHandler(agentWorkflow, logger)
+	apiHandler := handlers.NewAPIHandler(agentWorkflow, queueManager, logger)
 	apiHandler.SetupRoutes(router)
 
 	// 启动服务器
@@ -76,4 +93,8 @@ func main() {
 	<-quit
 
 	logger.Info("Shutting down server...")
+
+	// 停止队列管理器
+	queueManager.Stop()
+	logger.Info("Queue manager stopped")
 }

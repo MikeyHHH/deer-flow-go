@@ -25,6 +25,9 @@ type Config struct {
 	// 天气服务配置
 	Weather WeatherConfig `yaml:"weather"`
 
+	// 队列管理配置
+	Queue QueueConfig `yaml:"queue"`
+
 	// 日志配置
 	LogLevel string `yaml:"log_level"`
 }
@@ -56,6 +59,14 @@ type WeatherConfig struct {
 	APIKey  string `yaml:"api_key"`
 	BaseURL string `yaml:"base_url"`
 	Timeout int    `yaml:"timeout"`
+}
+
+// QueueConfig 队列管理配置
+type QueueConfig struct {
+	MaxWorkers     int `yaml:"max_workers"`     // 最大工作协程数
+	QueueSize      int `yaml:"queue_size"`      // 队列大小
+	RequestTimeout int `yaml:"request_timeout"` // 请求超时时间(秒)
+	QueueTimeout   int `yaml:"queue_timeout"`   // 队列等待超时时间(秒)
 }
 
 // LoadConfig 加载配置
@@ -92,6 +103,13 @@ func LoadConfig() (*Config, error) {
 			APIKey:  getEnv("WEATHER_API_KEY", "***********"),
 			BaseURL: getEnv("WEATHER_BASE_URL", "https://api.openweathermap.org/data/2.5"),
 			Timeout: getEnvInt("WEATHER_TIMEOUT", 10),
+		},
+
+		Queue: QueueConfig{
+			MaxWorkers:     getEnvInt("QUEUE_MAX_WORKERS", 3),
+			QueueSize:      getEnvInt("QUEUE_SIZE", 100),
+			RequestTimeout: getEnvInt("QUEUE_REQUEST_TIMEOUT", 30),
+			QueueTimeout:   getEnvInt("QUEUE_TIMEOUT", 10),
 		},
 	}
 

@@ -48,6 +48,11 @@ func NewAgentWorkflow(cfg *config.Config, logger *logrus.Logger) *AgentWorkflow 
 	}
 }
 
+// ProcessRequest 实现RequestProcessor接口
+func (w *AgentWorkflow) ProcessRequest(ctx context.Context, query string) (*models.ChatResponse, error) {
+	return w.ProcessQuery(ctx, query)
+}
+
 // ProcessQuery 处理用户查询的完整工作流
 func (w *AgentWorkflow) ProcessQuery(ctx context.Context, query string) (*models.ChatResponse, error) {
 	startTime := time.Now()
