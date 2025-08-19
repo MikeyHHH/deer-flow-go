@@ -1,547 +1,572 @@
-# Deer Flow Go
+# Deer Flow Go - MCP智能代理系统
 
-一个基于Go语言的高并发智能体对话系统，采用工作协程池架构设计，集成Azure OpenAI和Tavily搜索引擎，支持天气服务查询，实现MCP协议的实时数据搜索和服务调用功能。系统通过队列管理器和工作池模式，有效控制大模型API并发调用，确保服务稳定性和资源合理利用。
+一个基于Model Context Protocol (MCP)的智能代理系统，提供天气查询和搜索功能的RESTful API服务。
 
-## 核心特性
+## 🏗️ 系统架构
 
-### 🚀 高并发架构
-- **工作协程池**：采用固定大小的工作协程池（默认3个），严格控制大模型API并发调用数量
-- **请求队列管理**：实现缓冲队列（默认100个），支持高并发请求排队处理
-- **多层超时保护**：队列超时（10s）、请求超时（30s）、HTTP超时（60s）三层保护机制
-- **优雅降级**：当并发超限时返回503状态码，引导用户重试而非系统崩溃
-- **实时监控**：提供队列状态和统计信息API，支持系统运行状态监控
-
-### 🤖 智能对话能力
-- 基于Go Gin框架的高性能API服务
-- 集成Azure OpenAI大模型能力
-- 支持Tavily搜索引擎进行实时数据检索
-- 集成OpenWeatherMap天气服务，支持实时天气查询和预报
-- 实现MCP协议标准的客户端-服务端通信
-- 完整的智能体对话工作流程
-
-### 🛠️ 工程化特性
-- 灵活的配置管理和环境变量支持
-- 完善的错误处理和分类响应机制
-- 全面的单元测试覆盖（包括并发测试）
-- 结构化日志和监控指标
-- 容器化部署支持
-
-## 系统架构
-
-### 高并发处理架构
+### 整体架构图
 
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   HTTP请求      │───▶│   队列管理器      │───▶│  工作协程池     │
-│  (1000个并发)   │    │  (缓冲队列100)   │    │   (3个协程)     │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                              │                         │
-                              ▼                         ▼
-                       ┌──────────────┐         ┌─────────────────┐
-                       │   超时控制   │         │   大模型API     │
-                       │ 队列:10s     │         │  (Azure OpenAI) │
-                       │ 请求:30s     │         │   限流保护      │
-                       │ HTTP:60s     │         └─────────────────┘
-                       └──────────────┘
+┌─────────────────┐    HTTP API     ┌─────────────────┐
+│   客户端应用     │ ──────────────► │   API 服务器     │
+│  (Web/Mobile)   │                 │  (cmd/main.go)  │
+└─────────────────┘                 └─────────────────┘
+                                             │
+                                             │ 进程间通信
+                                             │ (JSON-RPC 2.0)
+                                             ▼
+                                    ┌─────────────────┐
+                                    │   MCP 服务器     │
+                                    │ (cmd/server)    │
+                                    └─────────────────┘
+                                             │
+                                             │ 外部API调用
+                                             ▼
+                            ┌─────────────────┬─────────────────┐
+                            │   天气服务API    │   搜索服务API    │
+                            │  (Weather API)  │  (Tavily API)   │
+                            └─────────────────┴─────────────────┘
 ```
 
 ### 核心组件
 
-1. **队列管理器 (QueueManager)**：
-   - 管理请求队列和工作协程池
-   - 实现请求调度和负载均衡
-   - 提供统计信息和健康检查
+1. **API服务器** (`cmd/main.go`): 提供HTTP RESTful接口
+2. **MCP客户端** (`pkg/mcp/mcp_client.go`): 负责与MCP服务器通信
+3. **MCP服务器** (`cmd/server/main.go`): 实现MCP协议，处理工具调用
+4. **工作流引擎** (`internal/workflow/agent.go`): 协调LLM和MCP调用
+5. **外部服务集成**: 天气API和搜索API
 
-2. **工作协程池 (Worker Pool)**：
-   - 固定数量的工作协程（默认3个）
-   - 复用协程，避免频繁创建销毁
-   - 通过通道进行任务分发
+## 📊 数据流程详解
 
-3. **API服务器**：基于Gin框架，提供HTTP接口和错误分类处理
+### 完整请求处理流程
 
-4. **LLM模块**：集成Azure OpenAI，处理自然语言理解和生成
+```
+1. HTTP请求接收
+   │
+   ▼
+2. 请求解析与验证
+   │
+   ▼
+3. LLM查询解析
+   │ (将自然语言转换为结构化MCP请求)
+   ▼
+4. MCP请求构建
+   │ (JSON-RPC 2.0格式)
+   ▼
+5. 进程间通信
+   │ (通过stdin/stdout管道)
+   ▼
+6. MCP服务器处理
+   │ (工具调用: 天气/搜索)
+   ▼
+7. 外部API调用
+   │ (Weather API / Tavily Search API)
+   ▼
+8. 响应数据处理
+   │ (格式化和解析)
+   ▼
+9. JSON-RPC响应
+   │
+   ▼
+10. HTTP响应返回
+```
 
-5. **搜索模块**：集成Tavily搜索引擎，提供实时数据检索
+### 数据传输格式
 
-6. **天气服务**：集成OpenWeatherMap API，提供天气查询和预报功能
+#### HTTP API请求
+```json
+{
+  "query": "北京今天的天气怎么样？",
+  "user_id": "user123"
+}
+```
 
-7. **MCP协议**：实现标准化的客户端-服务端通信
+#### MCP JSON-RPC请求
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_weather",
+    "arguments": {
+      "location": "北京",
+      "date": "today"
+    }
+  }
+}
+```
 
-8. **工作流引擎**：协调各组件，实现完整对话流程
+#### MCP JSON-RPC响应
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "🌤️ 北京今天多云，温度15-25°C，湿度60%"
+      }
+    ]
+  }
+}
+```
 
-## 工作流程
+## 🔧 核心模块详解
 
-### 高并发请求处理流程
+### 1. MCP客户端 (`pkg/mcp/mcp_client.go`)
 
-1. **请求接收**：前端发送用户问题到API服务器
-2. **队列调度**：请求进入队列管理器，根据队列状态进行处理：
-   - 队列未满：请求入队等待处理
-   - 队列已满：返回503状态码，提示服务繁忙
-3. **工作协程分配**：空闲的工作协程从队列中获取任务
-4. **智能处理**：工作协程执行以下步骤：
-   - 使用LLM将问题转换为MCP协议格式
-   - MCP客户端根据问题类型调用相应服务：
-     - 搜索相关问题：调用Tavily搜索服务获取实时数据
-     - 天气相关问题：调用OpenWeatherMap获取天气信息
-   - 系统将服务结果提供给LLM进行整合和润色
-5. **结果返回**：将最终结果返回给前端展示
-6. **资源释放**：工作协程回到协程池，等待下一个任务
+**主要功能:**
+- 管理MCP服务器进程生命周期
+- 处理JSON-RPC 2.0协议通信
+- 提供线程安全的请求/响应处理
 
-### 并发控制机制
+**核心方法:**
+```go
+// 启动MCP服务器进程
+func (c *Client) Start(ctx context.Context) error
 
-- **削峰填谷**：通过队列缓冲突发请求，平滑处理负载
-- **资源保护**：严格限制大模型API并发调用，防止服务过载
-- **优雅降级**：超出处理能力时返回明确错误码，而非系统崩溃
-- **实时监控**：提供队列长度、处理统计等监控指标
+// 处理MCP请求
+func (c *Client) ProcessRequest(ctx context.Context, req *models.MCPRequest) (*models.MCPResponse, error)
 
-## 安装与配置
+// 停止MCP服务器进程
+func (c *Client) Stop() error
+```
 
-### 前置条件
+**实现细节:**
+- 使用`exec.CommandContext`启动子进程
+- 通过stdin/stdout建立管道通信
+- 使用`sync.Mutex`保证线程安全
+- 支持动态请求ID生成
 
-- Go 1.21或更高版本
-- Azure OpenAI API访问权限
-- Tavily搜索API密钥
-- OpenWeatherMap API密钥（用于天气服务）
+### 2. MCP服务器 (`cmd/server/main.go`)
+
+**主要功能:**
+- 实现标准MCP协议
+- 注册和管理工具(天气、搜索)
+- 处理工具调用请求
+
+**支持的工具:**
+
+#### 天气工具
+```go
+// 工具定义
+{
+    "name": "get_weather",
+    "description": "获取指定地点的天气信息",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "location": {"type": "string"},
+            "date": {"type": "string"}
+        }
+    }
+}
+```
+
+#### 搜索工具
+```go
+// 工具定义
+{
+    "name": "search",
+    "description": "搜索最新信息",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "max_results": {"type": "integer"},
+            "search_depth": {"type": "string"}
+        }
+    }
+}
+```
+
+### 3. 工作流引擎 (`internal/workflow/agent.go`)
+
+**主要功能:**
+- 协调LLM和MCP客户端
+- 处理自然语言查询解析
+- 管理请求生命周期
+
+**核心流程:**
+```go
+func (w *AgentWorkflow) ProcessQuery(ctx context.Context, query string, userID string) (*models.WorkflowResponse, error) {
+    // 1. LLM解析查询
+    mcpRequest := w.parseQueryWithLLM(ctx, query)
+    
+    // 2. 调用MCP客户端
+    mcpResponse := w.mcpClient.ProcessRequest(ctx, mcpRequest)
+    
+    // 3. 格式化响应
+    return w.formatResponse(mcpResponse)
+}
+```
+
+## 🚀 快速开始
+
+### 环境要求
+
+- Go 1.21+
+- 有效的Azure OpenAI API密钥
+- 有效的天气API密钥
+- 有效的Tavily搜索API密钥
 
 ### 安装步骤
 
-1. 克隆仓库
-
+1. **克隆项目**
 ```bash
-git clone https://github.com/MikeyHHH/deer-flow-go.git
+git clone <repository-url>
 cd deer-flow-go
 ```
 
-2. 安装依赖
-
+2. **安装依赖**
 ```bash
-go mod tidy
+go mod download
 ```
 
-3. 配置环境变量
+3. **配置环境变量**
+```bash
+# 复制配置模板
+cp .env.example .env
 
-创建`.env`文件并设置以下变量：
-
+# 编辑配置文件
+vim .env
 ```
-# 服务器配置
-PORT=8080
-LOG_LEVEL=info
 
+**必需的环境变量:**
+```bash
 # Azure OpenAI配置
-AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_KEY=your-api-key
-AZURE_OPENAI_DEPLOYMENT=your-deployment-name
-AZURE_OPENAI_API_VERSION=2023-08-01-preview
-AZURE_OPENAI_TEMPERATURE=0.0
+AZURE_OPENAI_DEPLOYMENT_NAME=your-deployment-name
+AZURE_OPENAI_API_VERSION=2024-02-15-preview
 
-# Tavily搜索配置
+# 天气API配置
+WEATHER_API_KEY=your-weather-api-key
+WEATHER_API_BASE_URL=https://api.weatherapi.com/v1
+
+# 搜索API配置
 TAVILY_API_KEY=your-tavily-api-key
-TAVILY_MAX_RESULTS=5
-TAVILY_SEARCH_DEPTH=advanced
 
-# 天气服务配置
-WEATHER_API_KEY=your-openweathermap-api-key
-WEATHER_BASE_URL=https://api.openweathermap.org/data/2.5
-WEATHER_TIMEOUT=10
-
-# MCP配置
-MCP_ENABLED=true
-MCP_TIMEOUT=30
-
-# 队列管理配置
-QUEUE_MAX_WORKERS=3
-QUEUE_SIZE=100
-QUEUE_REQUEST_TIMEOUT=30
-QUEUE_TIMEOUT=10
+# 服务器配置
+SERVER_PORT=8080
+SERVER_HOST=localhost
 ```
 
-4. 编译项目
-
+4. **启动服务**
 ```bash
-go build -o bin/deer-flow-go cmd/main.go
+# 开发模式启动
+go run cmd/main.go
+
+# 或编译后启动
+go build -o bin/deer-flow ./cmd/main.go
+./bin/deer-flow
 ```
 
-5. 运行服务
+### API使用示例
 
+#### 天气查询
 ```bash
-./bin/deer-flow-go
+curl -X POST http://localhost:8080/api/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "北京今天的天气怎么样？",
+    "user_id": "user123"
+  }'
 ```
 
-## API接口
-
-### 聊天接口
-
-- **URL**: `/api/chat`
-- **方法**: POST
-- **请求体**:
-
+**响应示例:**
 ```json
 {
-  "messages": [
-    {"role": "user", "content": "历史消息1"},
-    {"role": "assistant", "content": "历史回复1"}
-  ],
-  "query": "用户当前问题"
+  "success": true,
+  "data": {
+    "response": "🌤️ 北京今天多云，温度15-25°C，湿度60%，风速10km/h",
+    "tool_used": "get_weather",
+    "processing_time": "1.25s"
+  },
+  "user_id": "user123",
+  "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
 
-- **响应**:
+#### 搜索查询
+```bash
+curl -X POST http://localhost:8080/api/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "最新的人工智能发展趋势",
+    "user_id": "user123"
+  }'
+```
 
+**响应示例:**
 ```json
 {
-  "response": "助手回复内容",
-  "timestamp": "2023-08-01T12:34:56Z",
-  "success": true
+  "success": true,
+  "data": {
+    "response": "🔍 根据最新搜索结果，人工智能发展趋势包括：\n1. 大语言模型持续优化...\n2. 多模态AI应用普及...\n3. AI安全和伦理关注度提升...",
+    "tool_used": "search",
+    "processing_time": "2.51s"
+  },
+  "user_id": "user123",
+  "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
 
-### MCP服务接口
+## 🔍 技术实现细节
 
-系统支持以下MCP方法：
+### MCP协议实现
 
-#### 搜索服务
-- `search`: 使用Tavily进行网络搜索
-- `direct_response`: 直接响应用户查询
+**协议标准:** JSON-RPC 2.0 over stdin/stdout
 
-#### 天气服务
-- `get_weather`: 获取指定城市的当前天气信息
-- `get_weather_forecast`: 获取指定城市的天气预报（1-5天）
-
-**天气查询示例**:
-```json
-{
-  "method": "get_weather",
-  "params": {
-    "city": "北京"
-  }
+**消息格式:**
+```go
+type MCPJSONRPCMessage struct {
+    JSONRPC string                 `json:"jsonrpc"`
+    ID      int                    `json:"id,omitempty"`
+    Method  string                 `json:"method,omitempty"`
+    Params  map[string]interface{} `json:"params,omitempty"`
+    Result  interface{}            `json:"result,omitempty"`
+    Error   *MCPError             `json:"error,omitempty"`
 }
 ```
 
-**天气预报示例**:
-```json
-{
-  "method": "get_weather_forecast",
-  "params": {
-    "city": "上海",
-    "days": 3
-  }
+**错误处理:**
+```go
+type MCPError struct {
+    Code    int    `json:"code"`
+    Message string `json:"message"`
+    Data    interface{} `json:"data,omitempty"`
 }
 ```
 
-### 工作流状态接口
+### 进程管理
 
-- **URL**: `/api/workflow/status`
-- **方法**: GET
-- **响应**:
+**启动流程:**
+1. 创建子进程: `go run cmd/server/main.go`
+2. 建立stdin/stdout管道
+3. 发送初始化消息
+4. 等待服务器就绪确认
 
-```json
-{
-  "step": "ready",
-  "search_data": {
-    "mcp_healthy": true,
-    "capabilities": {
-      "enabled": true,
-      "methods": ["search", "direct_response"],
-      "search_engine": "tavily",
-      "timeout_seconds": 30
-    }
-  }
+**通信机制:**
+- **发送**: JSON序列化 → 写入stdin → 添加换行符
+- **接收**: 从stdout读取 → 按行扫描 → JSON反序列化
+
+**生命周期管理:**
+```go
+// 启动时
+func (c *Client) Start(ctx context.Context) error {
+    c.cmd = exec.CommandContext(ctx, "go", "run", "cmd/server/main.go")
+    c.stdin, _ = c.cmd.StdinPipe()
+    c.stdout, _ = c.cmd.StdoutPipe()
+    c.cmd.Start()
+    return c.initialize()
+}
+
+// 停止时
+func (c *Client) Stop() error {
+    c.stdin.Close()
+    return c.cmd.Wait()
 }
 ```
 
-### 队列监控接口
+### 并发安全
 
-#### 队列状态
-- **URL**: `/api/queue/status`
-- **方法**: GET
-- **响应**:
+**线程安全措施:**
+- 使用`sync.Mutex`保护共享状态
+- 原子操作管理请求ID
+- 进程状态标志保护
 
-```json
-{
-  "healthy": true,
-  "running": true,
-  "timestamp": "2023-08-01T12:34:56Z"
+```go
+type Client struct {
+    mutex     sync.Mutex  // 保护并发访问
+    running   bool        // 进程状态
+    requestID int         // 请求ID计数器
+    // ... 其他字段
 }
 ```
 
-#### 队列统计
-- **URL**: `/api/queue/stats`
-- **方法**: GET
-- **响应**:
+### 错误处理策略
 
-```json
-{
-  "running": true,
-  "max_workers": 3,
-  "queue_size": 100,
-  "queued_count": 15,
-  "total_requests": 1250,
-  "processed_count": 1180,
-  "failed_count": 55,
-  "queue_length": 8,
-  "available_workers": 2
-}
-```
+**分层错误处理:**
+1. **网络层**: 连接错误、超时处理
+2. **协议层**: JSON-RPC错误码处理
+3. **业务层**: 工具调用失败处理
+4. **应用层**: 用户友好错误消息
 
-## 开发指南
+**错误恢复机制:**
+- 自动重试机制
+- 优雅降级处理
+- 详细错误日志记录
 
-### 项目结构
+## 📁 项目结构
 
 ```
-/
-├── cmd/                    # 命令行入口
-│   └── main.go            # 主程序
+deer-flow-go/
+├── cmd/                    # 可执行文件
+│   ├── main.go            # API服务器主程序
+│   └── server/            # MCP服务器
+│       └── main.go        # MCP服务器主程序
+├── internal/              # 内部包
+│   └── workflow/          # 工作流引擎
+│       └── agent.go       # 智能代理实现
 ├── pkg/                   # 公共包
 │   ├── config/            # 配置管理
-│   ├── llm/               # 大模型集成
-│   ├── search/            # 搜索引擎集成
-│   ├── weather/           # 天气服务集成
-│   ├── mcp/               # MCP协议实现
-│   ├── models/            # 数据模型
-│   ├── queue/             # 队列管理和工作协程池
-│   │   ├── manager.go     # 队列管理器实现
-│   │   ├── worker.go      # 工作协程实现
-│   │   └── manager_test.go # 并发处理单元测试
-│   └── handlers/          # API处理器
-├── internal/              # 内部包
-│   └── workflow/          # 工作流实现
-├── test/                  # 测试文件
-│   ├── llm_test.go        # LLM模块测试
-│   ├── search_test.go     # 搜索模块测试
-│   ├── weather_mcp_test.go # 天气服务测试
-│   ├── mcp_test.go        # MCP协议测试
-│   ├── workflow_test.go   # 工作流测试
-│   └── error_handling_test.go # 错误处理测试
-├── examples/              # 使用示例
-│   └── weather_example.go # 天气服务示例
-├── docs/                  # 文档目录
-│   └── weather-service.md # 天气服务文档
-├── .env                   # 环境变量
-├── .gitignore            # Git忽略文件
-├── go.mod                # Go模块文件
-├── go.sum                # Go依赖校验
-├── README.md             # 项目文档
-└── README_WEATHER.md     # 天气服务专项文档
+│   │   └── config.go
+│   ├── handlers/          # HTTP处理器
+│   │   └── api.go
+│   ├── llm/              # LLM客户端
+│   │   └── azure_openai.go
+│   ├── mcp/              # MCP协议实现
+│   │   ├── client.go     # MCP接口定义
+│   │   └── mcp_client.go # MCP客户端实现
+│   ├── models/           # 数据模型
+│   │   └── models.go
+│   ├── queue/            # 队列管理
+│   │   ├── manager.go
+│   │   └── worker.go
+│   ├── search/           # 搜索服务
+│   │   ├── search_mcp.go
+│   │   └── tavily.go
+│   └── weather/          # 天气服务
+│       ├── weather.go
+│       └── weather_mcp.go
+├── test/                 # 测试文件
+├── docs/                 # 文档
+│   └── mcp-architecture.svg
+├── go.mod               # Go模块定义
+├── go.sum               # 依赖校验
+└── README.md           # 项目说明
 ```
 
-## 测试
+## 🧪 测试
 
-项目包含完整的单元测试覆盖：
-
+### 运行测试
 ```bash
 # 运行所有测试
-go test ./test/ -v
-go test ./pkg/queue -v
+go test ./...
 
-# 运行特定测试
-go test ./test/ -v -run TestWeather
-go test ./test/ -v -run TestMCP
-go test ./test/ -v -run TestLLM
-go test ./pkg/queue -v -run TestQueueManager
+# 运行特定模块测试
+go test ./pkg/mcp/
+go test ./internal/workflow/
 
-# 运行并发处理测试
-go test ./pkg/queue -v -run TestQueueManager_ConcurrentRequests
-
-# 运行测试并查看覆盖率
-go test ./test/ -v -cover
-go test ./pkg/queue -v -cover
+# 运行测试并显示覆盖率
+go test -cover ./...
 ```
 
-## 使用示例
-
-### 天气服务示例
-
+### 集成测试
 ```bash
-# 运行天气服务示例
-go run examples/weather_example.go
+# 启动服务后进行集成测试
+go run cmd/main.go &
+
+# 测试天气API
+curl -X POST http://localhost:8080/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "上海明天天气", "user_id": "test"}'
+
+# 测试搜索API
+curl -X POST http://localhost:8080/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "最新科技新闻", "user_id": "test"}'
 ```
 
-该示例演示了：
-- 配置加载和客户端初始化
-- 健康检查
-- 当前天气查询
-- 天气预报查询
-- 错误处理机制
+## 🔧 开发指南
 
-### 扩展指南
+### 添加新工具
 
-#### 添加新的搜索引擎
+1. **在MCP服务器中注册工具**
+```go
+// cmd/server/main.go
+server.RegisterTool(mcp.Tool{
+    Name: "your_tool",
+    Description: "工具描述",
+    InputSchema: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "param1": map[string]interface{}{"type": "string"},
+        },
+    },
+})
+```
 
-1. 在`pkg/search/`目录下创建新的搜索引擎实现
-2. 实现与`TavilyClient`类似的接口
-3. 在配置中添加相应的选项
-4. 在工作流中集成新的搜索引擎
+2. **实现工具处理函数**
+```go
+func handleYourTool(params map[string]interface{}) (*mcp.ToolResult, error) {
+    // 实现工具逻辑
+    return mcp.NewToolResultText("结果"), nil
+}
+```
 
-#### 添加新的服务
+3. **更新路由**
+```go
+server.SetToolHandler("your_tool", handleYourTool)
+```
 
-1. 在`pkg/`目录下创建新的服务包
-2. 实现服务客户端和相关方法
-3. 在`pkg/mcp/client.go`中集成新服务
-4. 添加相应的MCP方法支持
-5. 编写单元测试
+### 性能优化建议
 
-#### 修改提示词模板
+1. **连接池**: 对于频繁的外部API调用，使用连接池
+2. **缓存**: 实现响应缓存减少重复请求
+3. **异步处理**: 对于耗时操作使用异步处理
+4. **监控**: 添加性能监控和日志记录
 
-可以在`pkg/llm/azure_openai.go`文件中修改以下方法中的提示词：
+## 📈 监控和日志
 
-- `ParseQueryToMCP`: 用于将用户查询转换为MCP请求的提示词
-- `FormatSearchResults`: 用于格式化搜索结果的提示词
+### 日志级别
+- **DEBUG**: 详细调试信息
+- **INFO**: 一般信息记录
+- **WARN**: 警告信息
+- **ERROR**: 错误信息
+- **FATAL**: 致命错误
 
-## 依赖项
+### 关键指标监控
+- API响应时间
+- MCP调用成功率
+- 外部API调用延迟
+- 系统资源使用情况
 
-主要依赖包括：
+## 🤝 贡献指南
 
-- **Web框架**: `github.com/gin-gonic/gin` - HTTP Web框架
-- **OpenAI客户端**: `github.com/sashabaranov/go-openai` - OpenAI API客户端
-- **MCP协议**: `github.com/mark3labs/mcp-go` - MCP协议实现
-- **配置管理**: `github.com/joho/godotenv` - 环境变量加载
-- **日志**: `github.com/sirupsen/logrus` - 结构化日志
-- **测试**: `github.com/stretchr/testify` - 测试工具包
-
-## 贡献指南
-
-1. Fork 本仓库
+1. Fork项目
 2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
 3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
 4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 打开 Pull Request
+5. 打开Pull Request
 
-## 更多文档
+## 📄 许可证
 
-- [天气服务详细文档](README_WEATHER.md)
-- [天气服务技术文档](docs/weather-service.md)
-- [使用示例](examples/weather_example.go)
+本项目采用MIT许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
 
-## 高并发优化详解
+## 🆘 故障排除
 
-### 协程池 vs 传统方案对比
+### 常见问题
 
-#### 🔴 传统方案（优化前）
-```go
-// 每个请求创建新的协程
-go func() {
-    response := callLLMAPI(request)
-    // 处理响应
-}()
+**Q: MCP服务器启动失败**
+A: 检查Go环境和依赖是否正确安装，确认端口未被占用
+
+**Q: API调用返回超时**
+A: 检查外部API密钥配置，确认网络连接正常
+
+**Q: 天气查询无结果**
+A: 验证天气API密钥有效性，检查地点名称格式
+
+**Q: 搜索功能异常**
+A: 确认Tavily API密钥配置正确，检查搜索参数格式
+
+### 调试模式
+
+启用详细日志:
+```bash
+LOG_LEVEL=debug go run cmd/main.go
 ```
 
-**问题**：
-- 无并发控制，1000个请求 = 1000个协程同时调用大模型API
-- 大模型服务过载，响应变慢甚至超时
-- 系统资源消耗巨大（内存、CPU、网络连接）
-- 服务不稳定，容易崩溃
-
-#### 🟢 协程池方案（优化后）
-```go
-// 固定3个工作协程 + 队列缓冲
-type QueueManager struct {
-    taskQueue   chan *RequestTask  // 缓冲队列
-    workerPool  chan chan *RequestTask // 工作协程池
-    workers     []*Worker          // 固定3个协程
-}
+查看MCP通信日志:
+```bash
+MCP_DEBUG=true go run cmd/main.go
 ```
 
-**优势**：
-- 严格控制并发：最多3个协程同时调用大模型API
-- 队列缓冲：100个请求排队，超出部分优雅拒绝
-- 资源可控：内存和CPU使用稳定
-- 服务稳定：大模型API不会过载
+---
 
-### 性能数据对比
-
-| 指标 | 传统方案 | 协程池方案 | 改善幅度 |
-|------|----------|------------|----------|
-| 并发控制 | ❌ 无限制 | ✅ 3个协程 | 🎯 精确控制 |
-| 内存使用 | 📈 线性增长 | 📊 恒定 | 🔽 降低95% |
-| 响应时间 | ⏰ 不稳定 | ⏱️ 稳定 | 📈 提升60% |
-| 成功率 | 📉 随并发下降 | 📈 稳定99%+ | 🚀 显著提升 |
-| 服务稳定性 | ❌ 易崩溃 | ✅ 高可用 | 💪 质的飞跃 |
-
-### 核心技术实现
-
-#### 1. 工作协程池设计
-```go
-type Worker struct {
-    ID         int
-    WorkerPool chan chan *RequestTask
-    JobChannel chan *RequestTask
-    Processor  RequestProcessor
-    quit       chan bool
-}
-
-// 协程复用，避免频繁创建销毁
-func (w *Worker) Start() {
-    go func() {
-        for {
-            w.WorkerPool <- w.JobChannel // 注册到工作池
-            select {
-            case job := <-w.JobChannel:
-                w.processJob(job) // 处理任务
-            case <-w.quit:
-                return // 优雅退出
-            }
-        }
-    }()
-}
-```
-
-#### 2. 队列调度算法
-```go
-func (qm *QueueManager) dispatcher() {
-    for {
-        select {
-        case job := <-qm.taskQueue:      // 从队列取任务
-            worker := <-qm.workerPool    // 获取空闲协程
-            worker <- job                // 分配任务
-        }
-    }
-}
-```
-
-#### 3. 多层超时保护
-```go
-select {
-case qm.taskQueue <- task:
-    // 任务入队成功
-case <-time.After(qm.config.QueueTimeout): // 队列超时
-    return nil, fmt.Errorf("queue timeout")
-case <-ctx.Done(): // 上下文取消
-    return nil, ctx.Err()
-}
-```
-
-### 监控与运维
-
-#### 实时监控指标
-- `total_requests`: 总请求数
-- `processed_count`: 成功处理数
-- `failed_count`: 失败请求数
-- `queue_length`: 当前队列长度
-- `available_workers`: 可用工作协程数
-
-#### 告警阈值建议
-- 队列长度 > 80：预警，考虑扩容
-- 失败率 > 5%：告警，检查服务状态
-- 可用协程 = 0：紧急，系统过载
-
-### 简历项目总结
-
-**项目名称**：高并发智能对话系统 (Deer Flow Go)
-
-**技术栈**：Go、Gin、Azure OpenAI、协程池、队列管理
-
-**核心亮点**：
-1. **高并发架构设计**：采用工作协程池+队列管理器模式，将无限并发优化为可控的3协程处理
-2. **性能优化成果**：内存使用降低95%，响应时间提升60%，服务稳定性质的飞跃
-3. **工程化实践**：多层超时保护、优雅降级、实时监控、完整单元测试
-4. **业务价值**：支持1000+并发请求，确保大模型API稳定调用，提升用户体验
-
-**技术难点解决**：
-- 大模型API并发限制：通过协程池严格控制并发数
-- 突发流量处理：队列缓冲+优雅降级机制
-- 系统稳定性：多层超时保护+资源隔离
-- 可观测性：完整的监控指标和健康检查
-
-## 许可证
-
-MIT
+**项目维护者**: [Your Name]
+**最后更新**: 2024年1月
+**版本**: v1.0.0

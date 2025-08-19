@@ -126,11 +126,20 @@ func (c *AzureOpenAIClient) ParseQueryToMCP(ctx context.Context, query string) (
 }
 
 对于天气预报查询（包含"预报"、"未来"、"明天"等关键词）：
+注意：天气预报最多支持5天，如果用户询问超过5天的预报，请将days参数设为5，并在direct_response中提醒用户。
 {
   "method": "get_weather_forecast",
   "params": {
     "city": "英文城市名称（如Beijing、Shanghai等）",
     "days": 3
+  }
+}
+
+如果用户询问超过5天的天气预报，请使用direct_response方法：
+{
+  "method": "direct_response",
+  "params": {
+    "response": "抱歉，天气预报最多只能查询5天。如果您需要查询[城市名]的天气预报，我可以为您提供最多5天的预报信息。"
   }
 }
 
@@ -148,7 +157,7 @@ func (c *AzureOpenAIClient) ParseQueryToMCP(ctx context.Context, query string) (
 {
   "method": "direct_response",
   "params": {
-    "message": "直接回复内容"
+    "response": "直接回复内容"
   }
 }
 

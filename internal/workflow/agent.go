@@ -9,37 +9,30 @@ import (
 
 	"deer-flow-go/pkg/config"
 	"deer-flow-go/pkg/llm"
-	"deer-flow-go/pkg/mcp"
 	"deer-flow-go/pkg/models"
-	"deer-flow-go/pkg/search"
 	"deer-flow-go/pkg/weather"
 )
+
+// MCPClientInterface MCP客户端接口
+type MCPClientInterface interface {
+	ProcessRequest(ctx context.Context, req *models.MCPRequest) (*models.MCPResponse, error)
+	HealthCheck(ctx context.Context) error
+	GetCapabilities() map[string]interface{}
+}
 
 // AgentWorkflow 智能体工作流
 type AgentWorkflow struct {
 	llmClient *llm.AzureOpenAIClient
-	mcpClient *mcp.MCPClient
+	mcpClient MCPClientInterface
 	logger    *logrus.Logger
 }
 
-// NewAgentWorkflow 创建新的智能体工作流
-func NewAgentWorkflow(cfg *config.Config, logger *logrus.Logger) *AgentWorkflow {
+// NewAgentWorkflow 函数已被移除，请使用 NewAgentWorkflowWithMCP
+
+// NewAgentWorkflowWithMCP 创建新的智能体工作流（使用真正的MCP客户端）
+func NewAgentWorkflowWithMCP(cfg *config.Config, mcpClient MCPClientInterface, logger *logrus.Logger) *AgentWorkflow {
 	// 创建LLM客户端
 	llmClient := llm.NewAzureOpenAIClient(&cfg.AzureOpenAI, logger)
-	
-	// 创建Tavily搜索客户端
-	tavilyClient := search.NewTavilyClient(&cfg.Tavily, logger)
-	
-	// 创建天气客户端
-	weatherConfig := &weather.WeatherConfig{
-		APIKey:  cfg.Weather.APIKey,
-		BaseURL: cfg.Weather.BaseURL,
-		Timeout: cfg.Weather.Timeout,
-	}
-	weatherClient := weather.NewWeatherClient(weatherConfig, logger)
-	
-	// 创建MCP客户端
-	mcpClient := mcp.NewMCPClient(&cfg.MCP, tavilyClient, weatherClient, logger)
 	
 	return &AgentWorkflow{
 		llmClient: llmClient,
@@ -111,90 +104,93 @@ func (w *AgentWorkflow) ProcessQuery(ctx context.Context, query string) (*models
 	
 	if mcpRequest.Method == "direct_response" {
 		// 直接响应，不需要进一步处理
-		if searchResp, ok := mcpResponse.Result.(*models.SearchResponse); ok {
+		if resultMap, ok := mcpResponse.Result.(map[string]interface{}); ok {
+			if content, exists := resultMap["content"]; exists {
+				if contentStr, ok := content.(string); ok {
+					finalResponse = contentStr
+				} else {
+					finalResponse = fmt.Sprintf("%v", content)
+				}
+			} else {
+				finalResponse = "处理完成"
+			}
+		} else if searchResp, ok := mcpResponse.Result.(*models.SearchResponse); ok {
 			finalResponse = searchResp.Answer
 		} else {
 			finalResponse = "处理完成"
 		}
 	} else if mcpRequest.Method == "get_weather" || mcpRequest.Method == "get_weather_forecast" {
-		// 天气响应，直接格式化
-		if mcpRequest.Method == "get_weather" {
-			if weatherData, ok := mcpResponse.Result.(*weather.WeatherData); ok {
-				finalResponse = fmt.Sprintf("🌤️ %s 当前天气:\n" +
-					"🌡️ 温度: %.1f°C\n" +
-					"☁️ 天气: %s\n" +
-					"💧 湿度: %d%%\n" +
-					"💨 风速: %.1f m/s\n" +
-					"⏰ 更新时间: %s",
-					weatherData.Location,
-					weatherData.Temperature,
-					weatherData.Description,
-					weatherData.Humidity,
-					weatherData.WindSpeed,
-					weatherData.Timestamp)
-			} else {
-				w.logger.Error("Invalid weather response format")
-				return &models.ChatResponse{
-					Response:  "抱歉，天气响应格式错误。",
-					Timestamp: time.Now(),
-					Success:   false,
-					Error:     "Invalid weather response format",
-				}, nil
-			}
-		} else {
-			// 天气预报
-		if forecastData, ok := mcpResponse.Result.([]weather.WeatherData); ok {
-				finalResponse = fmt.Sprintf("📅 天气预报:\n")
-				for i, data := range forecastData {
-					finalResponse += fmt.Sprintf("\n第 %d 天 (%s):\n" +
-						"🌡️ 温度: %.1f°C\n" +
-						"☁️ 天气: %s\n" +
-						"💧 湿度: %d%%\n" +
-						"💨 风速: %.1f m/s\n",
-						i+1, data.Timestamp[:10],
-						data.Temperature,
-						data.Description,
-						data.Humidity,
-						data.WindSpeed)
+		// 天气响应，处理真正的MCP协议返回的格式
+		if resultMap, ok := mcpResponse.Result.(map[string]interface{}); ok {
+			if content, exists := resultMap["content"]; exists {
+				// 真正的MCP协议返回格式化的文本内容
+				if contentStr, ok := content.(string); ok {
+					finalResponse = contentStr
+				} else {
+					finalResponse = fmt.Sprintf("%v", content)
 				}
 			} else {
-				w.logger.Error("Invalid weather forecast response format")
-				return &models.ChatResponse{
-					Response:  "抱歉，天气预报响应格式错误。",
-					Timestamp: time.Now(),
-					Success:   false,
-					Error:     "Invalid weather forecast response format",
-				}, nil
+				// 兼容其他格式
+				finalResponse = fmt.Sprintf("天气信息: %v", resultMap)
 			}
+		} else if weatherData, ok := mcpResponse.Result.(*weather.WeatherData); ok {
+			// 兼容伪MCP客户端的格式
+			finalResponse = fmt.Sprintf("🌤️ %s 当前天气:\n" +
+				"🌡️ 温度: %.1f°C\n" +
+				"☁️ 天气: %s\n" +
+				"💧 湿度: %d%%\n" +
+				"💨 风速: %.1f m/s\n" +
+				"⏰ 更新时间: %s",
+				weatherData.Location,
+				weatherData.Temperature,
+				weatherData.Description,
+				weatherData.Humidity,
+				weatherData.WindSpeed,
+				weatherData.Timestamp)
+		} else {
+			w.logger.WithField("result_type", fmt.Sprintf("%T", mcpResponse.Result)).Debug("Weather response format")
+			finalResponse = fmt.Sprintf("天气信息: %v", mcpResponse.Result)
 		}
 	} else {
-		// 搜索结果需要LLM格式化
-		searchResp, ok := mcpResponse.Result.(*models.SearchResponse)
-		if !ok {
-			w.logger.Error("Invalid MCP response format")
+		// 搜索结果处理，支持真正的MCP协议格式
+		if resultMap, ok := mcpResponse.Result.(map[string]interface{}); ok {
+			if content, exists := resultMap["content"]; exists {
+				// 真正的MCP协议返回格式化的文本内容
+				if contentStr, ok := content.(string); ok {
+					finalResponse = contentStr
+				} else {
+					finalResponse = fmt.Sprintf("%v", content)
+				}
+			} else {
+				// 兼容其他格式
+				finalResponse = fmt.Sprintf("搜索结果: %v", resultMap)
+			}
+		} else if searchResp, ok := mcpResponse.Result.(*models.SearchResponse); ok {
+			// 兼容伪MCP客户端的格式
+			w.logger.WithFields(logrus.Fields{
+				"results_count": len(searchResp.Results),
+				"has_answer":    searchResp.Answer != "",
+			}).Debug("Formatting search results with LLM")
+			
+			// 步骤4: 使用LLM格式化搜索结果
+			finalResponse, err = w.llmClient.FormatSearchResults(ctx, query, searchResp)
+			if err != nil {
+				w.logger.WithError(err).Error("Failed to format search results")
+				// 如果格式化失败，使用原始答案
+				if searchResp.Answer != "" {
+					finalResponse = searchResp.Answer
+				} else {
+					finalResponse = "抱歉，无法格式化搜索结果。"
+				}
+			}
+		} else {
+			w.logger.WithField("result_type", fmt.Sprintf("%T", mcpResponse.Result)).Error("Invalid MCP response format")
 			return &models.ChatResponse{
 				Response:  "抱歉，响应格式错误。",
 				Timestamp: time.Now(),
 				Success:   false,
 				Error:     "Invalid response format",
 			}, nil
-		}
-		
-		w.logger.WithFields(logrus.Fields{
-			"results_count": len(searchResp.Results),
-			"has_answer":    searchResp.Answer != "",
-		}).Debug("Formatting search results with LLM")
-		
-		// 步骤4: 使用LLM格式化搜索结果
-		finalResponse, err = w.llmClient.FormatSearchResults(ctx, query, searchResp)
-		if err != nil {
-			w.logger.WithError(err).Error("Failed to format search results")
-			// 如果格式化失败，使用原始答案
-			if searchResp.Answer != "" {
-				finalResponse = searchResp.Answer
-			} else {
-				finalResponse = "抱歉，无法格式化搜索结果。"
-			}
 		}
 	}
 	

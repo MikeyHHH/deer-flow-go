@@ -14,6 +14,7 @@ import (
 	"deer-flow-go/internal/workflow"
 	"deer-flow-go/pkg/config"
 	"deer-flow-go/pkg/handlers"
+	"deer-flow-go/pkg/mcp"
 	"deer-flow-go/pkg/queue"
 )
 
@@ -45,11 +46,20 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	// 创建工作流
-	agentWorkflow := workflow.NewAgentWorkflow(cfg, logger)
+	// 创建真正的MCP客户端
+	mcpClient := mcp.NewClient(logger)
+
+	// 启动MCP服务器进程
+	ctx := context.Background()
+	if err := mcpClient.Start(ctx); err != nil {
+		logger.WithError(err).Fatal("Failed to start MCP server process")
+	}
+	logger.Info("Real MCP server process started successfully")
+
+	// 创建工作流（使用真正的MCP客户端）
+	agentWorkflow := workflow.NewAgentWorkflowWithMCP(cfg, mcpClient, logger)
 
 	// 验证工作流配置
-	ctx := context.Background()
 	if err := agentWorkflow.ValidateWorkflow(ctx); err != nil {
 		logger.WithError(err).Warn("Workflow validation failed, but continuing startup")
 	}
@@ -97,4 +107,11 @@ func main() {
 	// 停止队列管理器
 	queueManager.Stop()
 	logger.Info("Queue manager stopped")
+
+	// 停止MCP客户端
+	if err := mcpClient.Stop(); err != nil {
+		logger.WithError(err).Error("Failed to stop MCP client")
+	} else {
+		logger.Info("MCP client stopped")
+	}
 }
